@@ -10,6 +10,7 @@ local math = require('math')
 local table = require('table')
 local http = require("http")
 local url = require('url')
+local utils = require('utils')
 
 local ports = {50041, 50051, 50061}
 
@@ -24,6 +25,7 @@ set_option(opts, "destroy_connection_jitter", 60000)
 set_option(opts, "destroy_connection_base", 60000)
 set_option(opts, "listen_ip", '127.0.0.1')
 set_option(opts, "perform_client_disconnect", 'true')
+set_option(opts, "send_download_update", 1000)
 
 set_option(opts, "rate_limit", 3000)
 set_option(opts, "rate_limit_reset", 86400) -- Reset limit in 24 hours
@@ -69,59 +71,67 @@ dhU2Sz3Q60DwJEL1VenQHiVYlWWtqXBThe9ggqRPnCfsCRTP8qifKkjk45zWPcpN
 -----END CERTIFICATE-----
 ]]
 
+JSON_DELIM = '\n'
+HTTP_DELIM = '\r\n\r\n'
+
+local body = "Hello world" .. HTTP_DELIM
+local http_res = string.format(
+"HTTP/1.1 200 OK\
+Content-Length: %s\
+Content-Type: text/plain\
+\
+%s", body:len(), body)
+
 local options = {
   cert = certPem,
   key = keyPem
 }
 
-local respond = function(log, client, payload)
-  local destroy = false
+local bind_respond = function(log, client)
+  return function (raw_line)
 
-  -- skip responses to requests
-  if payload.method == nil then
-    return
+    local payload = JSON.parse(raw_line)
+
+    -- skip responses to requests
+    if payload.method == nil then
+      return
+    end
+
+    local response = JSON.parse(fixtures[payload.method .. '.response'])
+
+    -- Handle rate limit logic
+    local destroy = false
+    client.rate_limit = client.rate_limit - 1
+    if client.rate_limit <= 0 then
+      response = JSON.parse(fixtures['rate-limiting']['rate-limit-error'])
+      destroy = true
+    end
+
+    response.target = payload.source
+    response.source = payload.target
+    response.id = payload.id
+
+    local response_out = JSON.stringify(response)
+    response_out:gsub("\n", " ")
+
+    log("Sending response:" .. response_out)
+    client:write(response_out .. '\n')
+
+    if destroy == true then
+      client:destroy()
+    end
+
   end
-
-  local response_method = payload.method .. '.response'
-  local response = JSON.parse(fixtures[response_method])
-  local response_out = nil
-
-  -- Handle rate limit logic
-  client.rate_limit = client.rate_limit - 1
-  if client.rate_limit <= 0 then
-    response = JSON.parse(fixtures['rate-limiting']['rate-limit-error'])
-    destroy = true
-  end
-
-  response.target = payload.source
-  response.source = payload.target
-  response.id = payload.id
-
-  -- Print the payload. The p() is intentional, Ryan :D
-  log("Sending response:")
-  p(response)
-
-  response_out = JSON.stringify(response)
-  response_out:gsub("\n", " ")
-
-  client:write(response_out .. '\n')
-
-  if destroy == true then
-    client:destroy()
-  end
-
-  return destroy
 end
 
-local send_schedule_changed = function(log, client)
-  local request = fixtures['check_schedule.changed.request']
-
-  log("Sending request:")
-  p(JSON.parse(request))
+local send_request = function(log, client, fixture)
+  local request = fixtures[fixture]
+  log("Sending request:" .. request)
   client:write(request .. '\n')
 end
 
-local function clear_timers(timer_ids)
+local function clear_timers(log, timer_ids)
+  log('Clearing timers')
   for k, v in pairs(timer_ids) do
     if v._closed ~= true then
       timer.clearTimer(v)
@@ -129,63 +139,80 @@ local function clear_timers(timer_ids)
   end
 end
 
-local function start_fixture_server(options, port)
-  local log = function(...)
+local TIMEOUTS = {}
+TIMEOUTS[opts.send_schedule_changed_initial] = function(log, client)
+  send_request(log, client, 'check_schedule.changed.request')
+end
+TIMEOUTS[opts.send_download_update] = function(log, client)
+  send_request(log, client, 'bundle_update.available.request')
+end
+TIMEOUTS[opts.rate_limit_reset] = function()
+  client.rate_limit = opts.rate_limit
+end
+
+local INTERVALS = {}
+INTERVALS[opts.send_schedule_changed_interval] = function(log, client)
+  send_request(log, client, 'check_schedule.changed.request')
+end
+
+local on_tls_creation = function(port, client)
+  local log, timers, le
+  timers = {}
+  
+  log = function(...)
     print(port .. ": " .. ...)
   end
 
-  local server = tls.createServer(options, function (client)
-    local lineEmitter = LineEmitter:new()
-    local destroyed = false
-    local timers = {}
+  client:once('data', function(data)
+
+    local char = data:sub(0,1):lower()
+    if char ~= "{" then
+      log('HTTP request')
+      client:write(http_res)
+      return 
+    end
+    client:once('end', function()
+      clear_timers(log, timers)
+    end)
+
+    client:once('error', function(err)
+      log('got error: ')
+      p(err)
+      client:destory()
+    end)
+
+    le = LineEmitter:new()
+    client:pipe(le)
+    le:on('data', bind_respond(log, client))
 
     client.rate_limit = opts.rate_limit
-    client:pipe(lineEmitter)
-    lineEmitter:on('data', function(line)
-      local payload = JSON.parse(line)
-      log("Got payload:")
-      p(payload)
-      destroyed = respond(log, client, payload)
 
-      if destroyed == true then
-        clear_timers(timers)
-      end
+    for timeout, f in pairs(TIMEOUTS) do
+      table.insert(timers, timer.setTimeout(timeout, utils.bind(f, log, client)))
+    end
 
-    end)
-
-    -- Reset rate limit counter
-    timer.setTimeout(opts.rate_limit_reset, function()
-      client.rate_limit = opts.rate_limit
-    end)
-
-    timer.setTimeout(opts.send_schedule_changed_initial, function()
-      send_schedule_changed(log, client)
-    end)
-
-    table.insert(timers,
-      timer.setInterval(opts.send_schedule_changed_interval, function()
-        send_schedule_changed(log, client)
-      end)
-    )
+    for timeout, f in pairs(INTERVALS) do
+      table.insert(timers, timer.setInterval(timeout, utils.bind(f, log, client)))
+    end
 
     -- Disconnect the agent after some random number of seconds
     -- to exercise reconnect logic
     if opts.perform_client_disconnect == 'true' then
-      local disconnect_time = opts.destroy_connection_base + math.floor(math.random() * opts.destroy_connection_jitter)
-      timer.setTimeout(disconnect_time, function()
-        log("Destroying connection after " .. disconnect_time .. "ms connected")
+      local disconnect_time = opts.destroy_connection_base + 
+        math.floor(math.random() * opts.destroy_connection_jitter)
+      log("Destroying connection after " .. disconnect_time .. "ms connected")
+      table.insert(timers, timer.setTimeout(disconnect_time, function()
+        log("Destroyed connection after " .. disconnect_time .. "ms connected")
         client:destroy()
-      end)
+      end))
     end
-  end):listen(port, opts.listen_ip)
-
-  return server
+  end)
 end
 
 -- There is no cleanup code for the server here as the process for exiting is
 -- to just ctrl+c the runner or kill the process.
-for k, v in pairs(ports) do
-  start_fixture_server(options, v)
-  print("TCP echo server listening on port " .. v)
+for k, port in pairs(ports) do
+  print("TLS fixture server listening on port " .. port)
+  tls.createServer(options, utils.bind(on_tls_creation, port)):listen(port, opts.listen_ip)
 end
 
