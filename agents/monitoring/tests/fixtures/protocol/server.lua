@@ -71,25 +71,46 @@ dhU2Sz3Q60DwJEL1VenQHiVYlWWtqXBThe9ggqRPnCfsCRTP8qifKkjk45zWPcpN
 -----END CERTIFICATE-----
 ]]
 
-JSON_DELIM = '\n'
-HTTP_DELIM = '\r\n\r\n'
-
-local body = "Hello world" .. HTTP_DELIM
-local http_res = string.format(
-"HTTP/1.1 200 OK\
-Content-Length: %s\
-Content-Type: text/plain\
-\
-%s", body:len(), body)
-
 local options = {
   cert = certPem,
   key = keyPem
 }
 
+local send_request = function(log, client, fixture)
+  local request = fixtures[fixture]
+  log("Sending request:" .. request)
+  client:write(request .. '\n')
+end
+
+local function clear_timers(log, timer_ids)
+  log('Clearing timers')
+  for k, v in pairs(timer_ids) do
+    if v._closed ~= true then
+      timer.clearTimer(v)
+    end
+  end
+end
+
+local TIMEOUTS = {}
+TIMEOUTS[opts.send_schedule_changed_initial] = function(log, client)
+  send_request(log, client, 'check_schedule.changed.request')
+end
+TIMEOUTS[opts.send_download_update] = function(log, client)
+  send_request(log, client, 'bundle_update.available.request')
+end
+TIMEOUTS[opts.rate_limit_reset] = function()
+  client.rate_limit = opts.rate_limit
+end
+
+local INTERVALS = {}
+INTERVALS[opts.send_schedule_changed_interval] = function(log, client)
+  send_request(log, client, 'check_schedule.changed.request')
+end
+
+
 local bind_respond = function(log, client)
   return function (raw_line)
-
+    log(raw_line)
     local payload = JSON.parse(raw_line)
 
     -- skip responses to requests
@@ -124,88 +145,82 @@ local bind_respond = function(log, client)
   end
 end
 
-local send_request = function(log, client, fixture)
-  local request = fixtures[fixture]
-  log("Sending request:" .. request)
-  client:write(request .. '\n')
+local http_responder = function(log, client, server, data)
+
+  http.onClient(server, client, function(req, res)
+
+    res.should_keep_alive = false
+    local body = "Hello world\n"
+    res:writeHead(200, {
+      ["Content-Type"] = "text/plain",
+      ["Content-Length"] = #body
+    })
+    res:finish(body, function()
+      log('called finish')
+      client:destroy()
+    end)
+  end)
+
+  log(data)
+  -- the server hadn't set up listeners when we got the request, so we have to reemit it 
+  client:emit('data', data)
 end
 
-local function clear_timers(log, timer_ids)
-  log('Clearing timers')
-  for k, v in pairs(timer_ids) do
-    if v._closed ~= true then
-      timer.clearTimer(v)
-    end
+local json_responder = function(log, client)
+
+  local timers = {}
+
+  client:once('end', function()
+    clear_timers(log, timers)
+  end)
+
+  client:once('error', function(err)
+    log('got error: ')
+    p(err)
+    client:destroy()
+  end)
+
+  local le = LineEmitter:new()
+  client:pipe(le)
+  le:on('data', bind_respond(log, client))
+
+  client.rate_limit = opts.rate_limit
+
+  for timeout, f in pairs(TIMEOUTS) do
+    table.insert(timers, timer.setTimeout(timeout, utils.bind(f, log, client)))
+  end
+
+  for timeout, f in pairs(INTERVALS) do
+    table.insert(timers, timer.setInterval(timeout, utils.bind(f, log, client)))
+  end
+
+  -- Disconnect the agent after some random number of seconds
+  -- to exercise reconnect logic
+  if opts.perform_client_disconnect == 'true' then
+    local disconnect_time = opts.destroy_connection_base + 
+      math.floor(math.random() * opts.destroy_connection_jitter)
+    log("Destroying connection after " .. disconnect_time .. "ms connected")
+    table.insert(timers, timer.setTimeout(disconnect_time, function()
+      log("Destroyed connection after " .. disconnect_time .. "ms connected")
+      client:destroy()
+    end))
   end
 end
 
-local TIMEOUTS = {}
-TIMEOUTS[opts.send_schedule_changed_initial] = function(log, client)
-  send_request(log, client, 'check_schedule.changed.request')
-end
-TIMEOUTS[opts.send_download_update] = function(log, client)
-  send_request(log, client, 'bundle_update.available.request')
-end
-TIMEOUTS[opts.rate_limit_reset] = function()
-  client.rate_limit = opts.rate_limit
-end
-
-local INTERVALS = {}
-INTERVALS[opts.send_schedule_changed_interval] = function(log, client)
-  send_request(log, client, 'check_schedule.changed.request')
-end
-
-local on_tls_creation = function(port, client)
-  local log, timers, le
-  timers = {}
+local on_tls_creation = function(port, server, client)
   
-  log = function(...)
+  local log = function(...)
     print(port .. ": " .. ...)
   end
 
   client:once('data', function(data)
-
     local char = data:sub(0,1):lower()
+
     if char ~= "{" then
-      log('HTTP request')
-      client:write(http_res)
-      return 
-    end
-    client:once('end', function()
-      clear_timers(log, timers)
-    end)
-
-    client:once('error', function(err)
-      log('got error: ')
-      p(err)
-      client:destory()
-    end)
-
-    le = LineEmitter:new()
-    client:pipe(le)
-    le:on('data', bind_respond(log, client))
-
-    client.rate_limit = opts.rate_limit
-
-    for timeout, f in pairs(TIMEOUTS) do
-      table.insert(timers, timer.setTimeout(timeout, utils.bind(f, log, client)))
+      return http_responder(log, client, server, data)
     end
 
-    for timeout, f in pairs(INTERVALS) do
-      table.insert(timers, timer.setInterval(timeout, utils.bind(f, log, client)))
-    end
-
-    -- Disconnect the agent after some random number of seconds
-    -- to exercise reconnect logic
-    if opts.perform_client_disconnect == 'true' then
-      local disconnect_time = opts.destroy_connection_base + 
-        math.floor(math.random() * opts.destroy_connection_jitter)
-      log("Destroying connection after " .. disconnect_time .. "ms connected")
-      table.insert(timers, timer.setTimeout(disconnect_time, function()
-        log("Destroyed connection after " .. disconnect_time .. "ms connected")
-        client:destroy()
-      end))
-    end
+    json_responder(log, client)
   end)
 end
 
@@ -213,6 +228,8 @@ end
 -- to just ctrl+c the runner or kill the process.
 for k, port in pairs(ports) do
   print("TLS fixture server listening on port " .. port)
-  tls.createServer(options, utils.bind(on_tls_creation, port)):listen(port, opts.listen_ip)
+  server = tls.createServer(options, function(client)
+    on_tls_creation(port, server, client)
+  end):listen(port, opts.listen_ip)
 end
 
