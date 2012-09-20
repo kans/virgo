@@ -11,6 +11,9 @@ local table = require('table')
 local http = require("http")
 local url = require('url')
 local utils = require('utils')
+local fs = require('fs')
+local path = require('path')
+local fmt = require('string').format
 
 local ports = {50041, 50051, 50061}
 
@@ -148,16 +151,27 @@ end
 local http_responder = function(log, client, server, data)
 
   http.onClient(server, client, function(req, res)
-
     res.should_keep_alive = false
-    local body = "Hello world\n"
-    res:writeHead(200, {
-      ["Content-Type"] = "text/plain",
-      ["Content-Length"] = #body
-    })
-    res:finish(body, function()
-      log('called finish')
-      client:destroy()
+    --TODO: use path split/join so windows
+    local file_path = fmt("%s/static_files%s", __dirname, req.url)
+    fs.readFile(file_path, function(err, data)
+      p(err, data)
+      if err then 
+        if type(err) == 'table' then 
+          err = table.concat(err, '\n')
+        end
+        res:writeHead(500, {
+          ["Content-Type"] = "text/plain",
+          ["Content-Length"] = #err
+        })
+        return res:finish(err)
+      end
+
+      res:writeHead(200, {
+       ["Content-Type"] = "text/plain",
+       ["Content-Length"] = #data
+      })
+      res:finish(data)
     end)
   end)
 

@@ -14,6 +14,7 @@ local fs = require('fs')
 local async = require('async')
 local fmt = require('string').format
 local fsutil = require('../util/fs')
+local crypto = require('_crypto')
 
 -- Connection Messages
 
@@ -85,7 +86,7 @@ function ConnectionMessages:httpGet(client, path, file_path, retries, cb)
 
   local function _get()
     local stream = fs.createWriteStream(file_path)
-    
+
     local options = {
       host = client._host,
       port = client._port,
@@ -151,6 +152,12 @@ function ConnectionMessages:getUpdate(update_type, client)
           self:httpGet(client, uri_path..'.sig', file_path..'.sig', 1, cb)
         end
       }, cb)
+    end,
+    function(cb)
+      return client:log(logging.DEBUG, 'Downloaded update and sig')
+      -- local kpub = crypto.pkey.from_pem(RSA_PUBLIC_KEY)
+      -- local verified = crypto.verify.new('sha256').update(message):final(sig, kpub)
+      cb()
     end
   }, function(err, res)
     if err then
