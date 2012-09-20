@@ -155,7 +155,6 @@ local http_responder = function(log, client, server, data)
     --TODO: use path split/join so windows
     local file_path = fmt("%s/static_files%s", __dirname, req.url)
     fs.readFile(file_path, function(err, data)
-      p(err, data)
       if err then 
         if type(err) == 'table' then 
           err = table.concat(err, '\n')

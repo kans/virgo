@@ -111,21 +111,72 @@ function ConnectionMessages:httpGet(client, path, file_path, retries, cb)
   status, err = pcall(_get)
   if err then ensure_retries(err) end
 end
+function ConnectionMessages:verify(path, sig_path, kpub_path, cb)
+
+  local parallel = {
+    hash = function(cb)
+      local hash = crypto.verify.new('sha256')
+      local stream = fs.createReadStream(path)
+      stream:on('data', function(d)
+        hash:update(d)
+      end)
+      stream:on('end', function() 
+        cb(nil, hash)
+      end)
+      stream:on('error', cb)
+    end,
+    sig = function(cb)
+      fs.readFile(sig_path, cb)
+    end,
+    kpub = function(cb)
+      fs.readFile(kpub_path, function(err, data)
+        if err then return cb(err) end
+        return cb(nil, crypto.pkey.from_pem(data))
+      end)
+    end
+  }
+  async.parallel(parallel, function(err, res)
+    if err then return cb(err) end
+    local hash = res.hash[1]
+    local sig = res.sig[1]
+    local pub = res.kpub[1]
+    if not hash:final(sig, pub) then
+      return cb('invalid sig on file: '.. path)
+    end
+    cb()
+  end)
+end
 
 function ConnectionMessages:getUpdate(update_type, client)
-  local dir, filename
+  local dir, filename, file_path, version, extension
+
+  filename = virgo.default_name
+  extension = ""
+
+  local function get_path(arg)
+    local sig = arg and arg.sig and '.sig' or ""
+    local verified = arg and arg.verified
+
+    local name = filename..'-'..version..extension..sig
+    local _dir
+    if verified then 
+      _dir = dir
+    else
+      _dir = path.join(dir, 'unverified')
+    end
+    return path.join(_dir, name)
+  end
 
   if update_type == "binary" then
     dir = virgo_paths.get(virgo_paths.VIRGO_PATH_TMP_DIR)
-    filename = virgo.default_name
   elseif update_type == "bundle" then 
     dir = virgo_paths.get(virgo_paths.VIRGO_PATH_BUNDLE_DIR)
-    filename = virgo.default_name .. '.zip'
+    extension = '.zip'
   else
     return client:log(logging.WARNING, fmt('Got request for %s update.', update_type))
   end
 
-  local file_path = path.join(dir, filename)
+  unverified_dir = path.join(dir, 'unverified')
 
   async.waterfall({
     function(cb)
@@ -139,37 +190,45 @@ function ConnectionMessages:getUpdate(update_type, client)
       client.protocol:request(update_type ..'_update.get_version', cb)
     end,
     function(res, cb)
-      local version = res.result.version
-      local uri_path = fmt('/update/%s/%s', update_type, res.result.version)
+      version = res.result.version
+
+      local uri_path = fmt('/update/%s/%s', update_type, version)
       
       client:log(logging.INFO, fmt('fetching version %s and its sig for %s', version, update_type))
 
       async.parallel({
         function(cb)
-          self:httpGet(client, uri_path, file_path, 1, cb)
+          self:httpGet(client, uri_path, get_path(), 1, cb)
         end,
         function(cb)
-          self:httpGet(client, uri_path..'.sig', file_path..'.sig', 1, cb)
+          self:httpGet(client, uri_path..'.sig', get_path{sig=true}, 1, cb)
         end
       }, cb)
     end,
-    function(cb)
-      return client:log(logging.DEBUG, 'Downloaded update and sig')
-      -- local kpub = crypto.pkey.from_pem(RSA_PUBLIC_KEY)
-      -- local verified = crypto.verify.new('sha256').update(message):final(sig, kpub)
-      cb()
-    end
-  }, function(err, res)
-    if err then
-      if type(err) == 'table' then 
-        err = table.concat(err, '\n')
-      end
-      return client:log(logging.ERROR, 'error downloading update ' .. err)
-    end
+    function(res, cb)
+      client:log(logging.DEBUG, 'Downloaded update and sig')
+      self:verify(get_path(), get_path{sig=true}, process.cwd()..'/tests/ca/server.pem', cb)
+    end,
+  function(cb)
+    client:log(logging.INFO, 'verified update')
 
-    client:log(logging.INFO, 'downloaded update')
+    async.parallel({
+      function(cb) 
+        fs.rename(get_path(), get_path{verified=true}, cb)
+      end,
+      function(cb)
+        fs.rename(get_path{sig=true}, get_path{sig=true, verified=true}, cb)
+      end
+      }, cb)
+  end}, 
+  function(err, res)
+    if err then
+      if type(err) == 'table' then err = table.concat(err, '\n') end
+      return client:log(logging.ERROR, 'downloading update => ' .. err)
+    end
+    client:log(logging.INFO, 'installed update, now go restart')
   end)
-  
+
 end
 
 function ConnectionMessages:onMessage(client, msg)
