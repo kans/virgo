@@ -69,8 +69,50 @@ function ConnectionMessages:fetchManifest(client)
   end
 end
 
+function ConnectionMessages:httpGet(client, path, file_path, retries, cb)
+  -- Does a HTTP GET over to the clients endpoint streaming the body to file_path attempting
+  -- retries number of times
+
+  local function ensure_retries(err, ...)
+    if not err then return cb(nil, ...) end
+
+    if retries >= 0 then
+      client:log(logging.INFO, 'retrying download')
+      return self:httpGet(client, path, file_path, retries-1, cb)
+    end
+    cb(err)
+  end
+
+  local function _get()
+    local stream = fs.createWriteStream(file_path)
+    
+    local options = {
+      host = client._host,
+      port = client._port,
+      path = path,
+      method = 'GET'
+    }
+
+    util.merge(options, client._tls_options)
+    
+    local req = https.request(options, function(res)
+      stream:on('error', ensure_retries)
+      stream:on('end', ensure_retries)
+      res:pipe(stream)
+      res:on('end', function(d)
+        stream:finish(d)
+      end)
+    end)
+    req:on('error', ensure_retries)
+    req:done()
+  end
+
+  status, err = pcall(_get)
+  if err then ensure_retries(err) end
+end
+
 function ConnectionMessages:getUpdate(update_type, client)
-  local dir, filename, req_type, write_path, stream
+  local dir, filename
 
   if update_type == "binary" then
     dir = virgo_paths.get(virgo_paths.VIRGO_PATH_TMP_DIR)
@@ -82,13 +124,9 @@ function ConnectionMessages:getUpdate(update_type, client)
     return client:log(logging.WARNING, fmt('Got request for %s update.', update_type))
   end
 
-  write_path = path.join(dir, filename)
+  local file_path = path.join(dir, filename)
 
-  stream = fs.createWriteStream(write_path)
-
-  req_type = fmt('%s_update.get_version', update_type)
-
-  local waterfall = {
+  async.waterfall({
     function(cb)
       fsutil.mkdirp(dir, "0755", function(err)
         if not err then return cb() end
@@ -97,35 +135,24 @@ function ConnectionMessages:getUpdate(update_type, client)
       end)
     end,
     function(cb)
-      client.protocol:request(req_type, cb)
+      client.protocol:request(update_type ..'_update.get_version', cb)
     end,
     function(res, cb)
       local version = res.result.version
-
-      client:log(logging.INFO, fmt('fetching version %s for %s', version, update_type))
-
-      local options = {
-        host = client._host,
-        port = client._port,
-        path = fmt('/update/%s/%s', update_type, res.result.version),
-        method = 'GET'
-      }
-      util.merge(options, client._tls_options)
+      local uri_path = fmt('/update/%s/%s', update_type, res.result.version)
       
-      local req = https.request(options, function(res)
-        stream:on('error', cb)
-        stream:on('end', cb)
-        res:pipe(stream)
-        res:on('end', function(d)
-          client:log(logging.INFO, 'finished downloading update')
-          stream:finish(d)
-        end)
-      end)
-      req:on('error', cb)
-      req:done()
+      client:log(logging.INFO, fmt('fetching version %s and its sig for %s', version, update_type))
+
+      async.parallel({
+        function(cb)
+          self:httpGet(client, uri_path, file_path, 1, cb)
+        end,
+        function(cb)
+          self:httpGet(client, uri_path..'.sig', file_path..'.sig', 1, cb)
+        end
+      }, cb)
     end
-  }
-  local cb = function(err, res)
+  }, function(err, res)
     if err then
       if type(err) == 'table' then 
         err = table.concat(err, '\n')
@@ -134,13 +161,7 @@ function ConnectionMessages:getUpdate(update_type, client)
     end
 
     client:log(logging.INFO, 'downloaded update')
-
-  end
-  status, err = pcall(async.waterfall, waterfall, cb)
-
-  if err then 
-    client:log(logging.ERROR, 'error downloading update ' .. err)
-  end
+  end)
   
 end
 
