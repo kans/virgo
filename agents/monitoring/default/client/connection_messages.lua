@@ -155,6 +155,8 @@ function ConnectionMessages:getUpdate(update_type, client)
   filename = virgo.default_name
   extension = ""
 
+  local FILES_ALREADY_EXIST = "FILES ALREADY EXIST"
+
   local function get_path(arg)
     local sig = arg and arg.sig and '.sig' or ""
     local verified = arg and arg.verified
@@ -194,6 +196,25 @@ function ConnectionMessages:getUpdate(update_type, client)
     function(res, cb)
       version = res.result.version
 
+      async.parallel({
+        function(cb)
+          fs.exists(get_path{sig=true, verified=true}, cb)
+        end,
+        function(cb)
+          fs.exists(get_path{verified=true}, cb)
+        end,
+      }, cb)
+    end,
+    function(res, cb)
+      local sig, update
+
+      sig, update = unpack(res)
+
+      -- Early return from waterfall
+      if sig[1] == true and update[1] == true then
+        return cb(FILES_ALREADY_EXIST)
+      end
+
       local uri_path = fmt('/update/%s/%s', update_type, version)
       
       client:log(logging.INFO, fmt('fetching version %s and its sig for %s', version, update_type))
@@ -224,11 +245,18 @@ function ConnectionMessages:getUpdate(update_type, client)
       }, cb)
   end}, 
   function(err, res)
-    if err then
-      if type(err) == 'table' then err = table.concat(err, '\n') end
-      return client:log(logging.ERROR, 'downloading update => ' .. err)
+    if not err then
+      client:log(logging.INFO, 'installed update, now go restart')
+      return
     end
-    client:log(logging.INFO, 'installed update, now go restart')
+
+    if err == FILES_ALREADY_EXIST then 
+      return client:log(logging.DEBUG, 'already downloaded update, not doing so again')
+    end
+
+    if type(err) == 'table' then err = table.concat(err, '\n') end
+    client:log(logging.ERROR, 'downloading update => ' .. err)
+
   end)
 
 end
