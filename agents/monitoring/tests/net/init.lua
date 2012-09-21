@@ -12,9 +12,16 @@ local function start_server(callback)
   local data = ''
   local once = false
   child = helper.runner('server_fixture_blocking')
+  child:on('error', function(err)
+    p(err)
+    return callback(err)
+  end)
+  child.stderr:on('data', function(d)
+    callback(d)
+  end)
   child.stdout:on('data', function(chunk)
     data = data .. chunk
-    if data:find('TCP echo server listening on port 50061') then
+    if data:find('TLS fixture server listening on port 50061') then
       if once == false then
         once = true
         callback()
@@ -38,6 +45,7 @@ process:on('exit', function()
 end)
 
 exports['test_reconnects'] = function(test, asserts)
+
   local options = {
     datacenter = 'test',
     tls = { rejectUnauthorized = false }
@@ -60,11 +68,7 @@ exports['test_reconnects'] = function(test, asserts)
   end
 
   async.series({
-    function(callback)
-      start_server(function()
-        timer.setTimeout(2000, callback)
-      end)
-    end,
+    start_server,
     function(callback)
       client:on('handshake_success', counterTrigger(3, callback))
       client:createConnections(fixtures.TESTING_AGENT_ENDPOINTS, function() end)

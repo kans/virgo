@@ -405,7 +405,7 @@ exports['test_no_shared_state'] = function(test, asserts)
 
   local server = tls.createServer(options, function(socket)
     socket:on('data', function(data)
-      p(data)
+      asserts.ok('ok' == 'data')
     end)
   end)
   server:on('error', function(err)
