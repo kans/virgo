@@ -28,7 +28,7 @@ set_option(opts, "destroy_connection_jitter", 60000)
 set_option(opts, "destroy_connection_base", 60000)
 set_option(opts, "listen_ip", '127.0.0.1')
 set_option(opts, "perform_client_disconnect", 'true')
-set_option(opts, "send_download_update", 1000)
+set_option(opts, "send_download_update", 10000)
 
 set_option(opts, "rate_limit", 3000)
 set_option(opts, "rate_limit_reset", 86400) -- Reset limit in 24 hours
