@@ -85,7 +85,6 @@ function ConnectionMessages:httpGet(client, path, file_path, retries, cb)
   end
 
   local function _get()
-    local stream = fs.createWriteStream(file_path)
 
     local options = {
       host = client._host,
@@ -95,8 +94,9 @@ function ConnectionMessages:httpGet(client, path, file_path, retries, cb)
     }
 
     util.merge(options, client._tls_options)
-    
+
     local req = https.request(options, function(res)
+      local stream = fs.createWriteStream(file_path)
       stream:on('error', ensure_retries)
       stream:on('end', ensure_retries)
       res:pipe(stream)

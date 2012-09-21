@@ -74,11 +74,6 @@ dhU2Sz3Q60DwJEL1VenQHiVYlWWtqXBThe9ggqRPnCfsCRTP8qifKkjk45zWPcpN
 -----END CERTIFICATE-----
 ]]
 
-local options = {
-  cert = certPem,
-  key = keyPem
-}
-
 local send_request = function(log, client, fixture)
   local request = fixtures[fixture]
   log("Sending request:" .. request)
@@ -241,7 +236,7 @@ end
 -- to just ctrl+c the runner or kill the process.
 for k, port in pairs(ports) do
   print("TLS fixture server listening on port " .. port)
-  server = tls.createServer(options, function(client)
+  server = tls.createServer({cert=certPem, key=keyPem}, function(client)
     on_tls_creation(port, server, client)
   end):listen(port, opts.listen_ip)
 end
