@@ -105,6 +105,32 @@ INTERVALS[opts.send_schedule_changed_interval] = function(log, client)
   send_request(log, client, 'check_schedule.changed.request')
 end
 
+local http_responder = function(log, client, server)
+
+  http.onClient(server, client, function(req, res)
+    res.should_keep_alive = false
+    --TODO: use path split/join so windows
+    local file_path = fmt("%s/static_files%s", __dirname, req.url)
+    fs.readFile(file_path, function(err, data)
+      if err then 
+        if type(err) == 'table' then 
+          err = table.concat(err, '\n')
+        end
+        res:writeHead(500, {
+          ["Content-Type"] = "text/plain",
+          ["Content-Length"] = #err
+        })
+        return res:finish(err)
+      end
+
+      res:writeHead(200, {
+       ["Content-Type"] = "text/plain",
+       ["Content-Length"] = #data
+      })
+      res:finish(data)
+    end)
+  end)
+end
 
 local bind_respond = function(log, client)
   return function (raw_line)
@@ -143,38 +169,7 @@ local bind_respond = function(log, client)
   end
 end
 
-local http_responder = function(log, client, server, data)
-
-  http.onClient(server, client, function(req, res)
-    res.should_keep_alive = false
-    --TODO: use path split/join so windows
-    local file_path = fmt("%s/static_files%s", __dirname, req.url)
-    fs.readFile(file_path, function(err, data)
-      if err then 
-        if type(err) == 'table' then 
-          err = table.concat(err, '\n')
-        end
-        res:writeHead(500, {
-          ["Content-Type"] = "text/plain",
-          ["Content-Length"] = #err
-        })
-        return res:finish(err)
-      end
-
-      res:writeHead(200, {
-       ["Content-Type"] = "text/plain",
-       ["Content-Length"] = #data
-      })
-      res:finish(data)
-    end)
-  end)
-
-  log(data)
-  -- the server hadn't set up listeners when we got the request, so we have to reemit it 
-  client:emit('data', data)
-end
-
-local json_responder = function(log, client)
+local json_responder = function(log, client, server)
 
   local timers = {}
 
@@ -222,13 +217,18 @@ local on_tls_creation = function(port, server, client)
   end
 
   client:once('data', function(data)
+    log(data)
     local char = data:sub(0,1):lower()
+    local responder
 
     if char ~= "{" then
-      return http_responder(log, client, server, data)
+      responder = http_responder
+    else
+      responder = json_responder
     end
-
-    json_responder(log, client)
+    responder(log, client, server)
+      -- the server hadn't set up listeners when we got the request, so we have to reemit it 
+    client:emit('data', data)
   end)
 end
 

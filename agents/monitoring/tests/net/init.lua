@@ -10,22 +10,17 @@ local child
 
 local function start_server(callback)
   local data = ''
-  local once = false
   child = helper.runner('server_fixture_blocking')
-  child:on('error', function(err)
-    p(err)
-    return callback(err)
-  end)
   child.stderr:on('data', function(d)
     callback(d)
+    callback = nil
   end)
   child.stdout:on('data', function(chunk)
     data = data .. chunk
-    if data:find('TLS fixture server listening on port 50061') then
-      if once == false then
-        once = true
-        callback()
-      end
+    if data:find('TLS fixture server listening on port 50061') and callback then
+      callback()
+      callback = nil
+      return
     end
   end)
 end
