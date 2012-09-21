@@ -131,7 +131,9 @@ function ConnectionMessages:verify(path, sig_path, kpub_path, cb)
     kpub = function(cb)
       fs.readFile(kpub_path, function(err, data)
         if err then return cb(err) end
-        return cb(nil, crypto.pkey.from_pem(data))
+        local key = crypto.pkey.from_pem(data)
+        if not key then return cb('invalid key file') end
+        return cb(nil, key)
       end)
     end
   }
