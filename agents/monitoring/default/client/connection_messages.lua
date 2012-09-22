@@ -128,23 +128,23 @@ function ConnectionMessages:verify(path, sig_path, kpub_path, cb)
     sig = function(cb)
       fs.readFile(sig_path, cb)
     end,
-    kpub = function(cb)
-      fs.readFile(kpub_path, function(err, data)
-        if err then return cb(err) end
-        local key = crypto.pkey.from_pem(data)
-        if not key then return cb('invalid key file') end
-        return cb(nil, key)
-      end)
+    pub_data = function(cb)
+      fs.readFile(kpub_path, cb)
     end
   }
   async.parallel(parallel, function(err, res)
     if err then return cb(err) end
     local hash = res.hash[1]
     local sig = res.sig[1]
-    local pub = res.kpub[1]
-    if not hash:final(sig, pub) then
+    local pub_data = res.pub_data[1]
+    local key = crypto.pkey.from_pem(pub_data)
+
+    if not key then return cb('invalid key file') end
+
+    if not hash:final(sig, key) then
       return cb('invalid sig on file: '.. path)
     end
+
     cb()
   end)
 end
@@ -180,11 +180,9 @@ function ConnectionMessages:getUpdate(update_type, client)
     return client:log(logging.WARNING, fmt('Got request for %s update.', update_type))
   end
 
-  unverified_dir = path.join(dir, 'unverified')
-
   async.waterfall({
     function(cb)
-      fsutil.mkdirp(dir, "0755", function(err)
+      fsutil.mkdirp(path.join(dir, 'unverified'), "0755", function(err)
         if not err then return cb() end
         if err.code == "EEXIST" then return cb() end
         cb(err)
@@ -232,7 +230,7 @@ function ConnectionMessages:getUpdate(update_type, client)
       client:log(logging.DEBUG, 'Downloaded update and sig')
       self:verify(get_path(), get_path{sig=true}, process.cwd()..'/tests/ca/server.pem', cb)
     end,
-  function(cb)
+  function(res, cb)
     client:log(logging.INFO, 'verified update')
 
     async.parallel({

@@ -232,6 +232,9 @@ local on_tls_creation = function(port, server, client)
   end)
 end
 
+process:on('error', function(err)
+  print(err)
+end)
 -- There is no cleanup code for the server here as the process for exiting is
 -- to just ctrl+c the runner or kill the process.
 for k, port in pairs(ports) do
