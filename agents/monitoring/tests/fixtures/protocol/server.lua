@@ -11,10 +11,6 @@ local table = require('table')
 local http = require("http")
 local url = require('url')
 local utils = require('utils')
-local fs = require('fs')
-local path = require('path')
-local fmt = require('string').format
-local os = require('os')
 
 local ports = {50041, 50051, 50061}
 
@@ -29,7 +25,7 @@ set_option(opts, "destroy_connection_jitter", 60000)
 set_option(opts, "destroy_connection_base", 60000)
 set_option(opts, "listen_ip", '127.0.0.1')
 set_option(opts, "perform_client_disconnect", 'true')
-set_option(opts, "send_download_upgrade", 1000)
+set_option(opts, "send_download_update", 1000)
 
 set_option(opts, "rate_limit", 3000)
 set_option(opts, "rate_limit_reset", 86400) -- Reset limit in 24 hours
@@ -75,93 +71,25 @@ dhU2Sz3Q60DwJEL1VenQHiVYlWWtqXBThe9ggqRPnCfsCRTP8qifKkjk45zWPcpN
 -----END CERTIFICATE-----
 ]]
 
-local send_request = function(log, client, fixture)
-  local request = fixtures[fixture]
-  log("Sending request:" .. request)
-  client:write(request .. '\n')
-end
+JSON_DELIM = '\n'
+HTTP_DELIM = '\r\n\r\n'
 
-local function clear_timers(log, timer_ids)
-  log('Clearing timers')
-  for k, v in pairs(timer_ids) do
-    if v._closed ~= true then
-      timer.clearTimer(v)
-    end
-  end
-end
+local body = "Hello world" .. HTTP_DELIM
+local http_res = string.format(
+"HTTP/1.1 200 OK\
+Content-Length: %s\
+Content-Type: text/plain\
+\
+%s", body:len(), body)
 
-local TIMEOUTS = {}
-TIMEOUTS[opts.send_schedule_changed_initial] = function(log, client)
-  send_request(log, client, 'check_schedule.changed.request')
-end
-TIMEOUTS[opts.send_download_upgrade] = function(log, client)
-  send_request(log, client, 'bundle_upgrade.available.request')
-end
-TIMEOUTS[opts.rate_limit_reset] = function()
-  client.rate_limit = opts.rate_limit
-end
-
-local INTERVALS = {}
-INTERVALS[opts.send_schedule_changed_interval] = function(log, client)
-  send_request(log, client, 'check_schedule.changed.request')
-end
-
-local http_responder = function(log, client, server)
-
-  http.onClient(server, client, function(req, res)
-    local part, parts, file_path
-
-    local _reply_http = function(status, data)
-      status = status or 200
-      data = data and tostring(data) or "hello"
-      res:writeHead(status, {
-        ["Content-Type"] = "text/plain",
-        ["Content-Length"] = #data
-      })
-      log('sending reply to POST: '.. data)
-      res:finish(data)
-    end
-
-    res.should_keep_alive = false
-
-    if req.method == 'POST' then
-      local recieved = 0
-      req:on('data', function(d)
-        recieved =  recieved + #d
-      end)
-      req:on('end', function()
-        _reply_http(204, fmt('got %d bytes', recieved))
-      end)
-
-      return
-    end
-
-    -- path on disk
-    file_path = fmt("static_files%s", req.url)
-    -- split path on / 
-    parts = {}
-    for part in file_path:gmatch("[^/]+") do
-      parts[#parts + 1] = part
-    end
-    -- join path on the / or \\ 
-    file_path = path.join(__dirname, unpack(parts))
-
-    fs.readFile(file_path, function(err, data)
-      local status = 200
-      if err then 
-        log('got err:' .. err)
-        data = err
-        status = 500
-      end
-
-      return _reply_http(status, data)    
-    end)
-  end)
-end
+local options = {
+  cert = certPem,
+  key = keyPem
+}
 
 local bind_respond = function(log, client)
   return function (raw_line)
-    log(raw_line)
+
     local payload = JSON.parse(raw_line)
 
     -- skip responses to requests
@@ -196,78 +124,95 @@ local bind_respond = function(log, client)
   end
 end
 
-local json_responder = function(log, client, server)
+local send_request = function(log, client, fixture)
+  local request = fixtures[fixture]
+  log("Sending request:" .. request)
+  client:write(request .. '\n')
+end
 
-  local timers = {}
-
-  client:once('end', function()
-    clear_timers(log, timers)
-  end)
-
-  client:once('error', function(err)
-    log('got error: ')
-    p(err)
-    client:destroy()
-  end)
-
-  local le = LineEmitter:new()
-  client:pipe(le)
-  le:on('data', bind_respond(log, client))
-
-  client.rate_limit = opts.rate_limit
-
-  for timeout, f in pairs(TIMEOUTS) do
-    table.insert(timers, timer.setTimeout(timeout, utils.bind(f, log, client)))
-  end
-
-  for timeout, f in pairs(INTERVALS) do
-    table.insert(timers, timer.setInterval(timeout, utils.bind(f, log, client)))
-  end
-
-  -- Disconnect the agent after some random number of seconds
-  -- to exercise reconnect logic
-  if opts.perform_client_disconnect == 'true' then
-    local disconnect_time = opts.destroy_connection_base + 
-      math.floor(math.random() * opts.destroy_connection_jitter)
-    log("Destroying connection after " .. disconnect_time .. "ms connected")
-    table.insert(timers, timer.setTimeout(disconnect_time, function()
-      log("Destroyed connection after " .. disconnect_time .. "ms connected")
-      client:destroy()
-    end))
+local function clear_timers(log, timer_ids)
+  log('Clearing timers')
+  for k, v in pairs(timer_ids) do
+    if v._closed ~= true then
+      timer.clearTimer(v)
+    end
   end
 end
 
-local on_tls_creation = function(port, server, client)
+local TIMEOUTS = {}
+TIMEOUTS[opts.send_schedule_changed_initial] = function(log, client)
+  send_request(log, client, 'check_schedule.changed.request')
+end
+TIMEOUTS[opts.send_download_update] = function(log, client)
+  send_request(log, client, 'bundle_update.available.request')
+end
+TIMEOUTS[opts.rate_limit_reset] = function()
+  client.rate_limit = opts.rate_limit
+end
+
+local INTERVALS = {}
+INTERVALS[opts.send_schedule_changed_interval] = function(log, client)
+  send_request(log, client, 'check_schedule.changed.request')
+end
+
+local on_tls_creation = function(port, client)
+  local log, timers, le
+  timers = {}
   
-  local log = function(...)
+  log = function(...)
     print(port .. ": " .. ...)
   end
 
   client:once('data', function(data)
-    log(data)
-    local char = data:sub(0,1):lower()
-    local responder
 
+    local char = data:sub(0,1):lower()
     if char ~= "{" then
-      responder = http_responder
-    else
-      responder = json_responder
+      log('HTTP request')
+      client:write(http_res)
+      return 
     end
-    responder(log, client, server)
-      -- the server hadn't set up listeners when we got the request, so we have to reemit it 
-    client:emit('data', data)
+    client:once('end', function()
+      clear_timers(log, timers)
+    end)
+
+    client:once('error', function(err)
+      log('got error: ')
+      p(err)
+      client:destory()
+    end)
+
+    le = LineEmitter:new()
+    client:pipe(le)
+    le:on('data', bind_respond(log, client))
+
+    client.rate_limit = opts.rate_limit
+
+    for timeout, f in pairs(TIMEOUTS) do
+      table.insert(timers, timer.setTimeout(timeout, utils.bind(f, log, client)))
+    end
+
+    for timeout, f in pairs(INTERVALS) do
+      table.insert(timers, timer.setInterval(timeout, utils.bind(f, log, client)))
+    end
+
+    -- Disconnect the agent after some random number of seconds
+    -- to exercise reconnect logic
+    if opts.perform_client_disconnect == 'true' then
+      local disconnect_time = opts.destroy_connection_base + 
+        math.floor(math.random() * opts.destroy_connection_jitter)
+      log("Destroying connection after " .. disconnect_time .. "ms connected")
+      table.insert(timers, timer.setTimeout(disconnect_time, function()
+        log("Destroyed connection after " .. disconnect_time .. "ms connected")
+        client:destroy()
+      end))
+    end
   end)
 end
 
-process:on('error', function(err)
-  print(err)
-end)
 -- There is no cleanup code for the server here as the process for exiting is
 -- to just ctrl+c the runner or kill the process.
 for k, port in pairs(ports) do
   print("TLS fixture server listening on port " .. port)
-  server = tls.createServer({cert=certPem, key=keyPem}, function(client)
-    on_tls_creation(port, server, client)
-  end):listen(port, opts.listen_ip)
+  tls.createServer(options, utils.bind(on_tls_creation, port)):listen(port, opts.listen_ip)
 end
 

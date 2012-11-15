@@ -71,18 +71,16 @@ function Request:serialize(msgId)
   }
 end
 
-local BundleUpgrade = Request:extend()
-function BundleUpgrade:initialize()
+local BundleUpdate = Request:extend()
+function BundleUpdate:initialize()
   Request.initialize(self)
-  self.params.noop = 1
-  self.method = 'bundle_upgrade.get_version'
+  self.method = 'bundle_update.get_version'
 end
 
-local BinaryUpgrade = Request:extend()
-function BinaryUpgrade:initialize()
+local BinaryUpdate = Request:extend()
+function BinaryUpdate:initialize()
   Request.initialize(self)
-  self.params.noop = 1
-  self.method = 'binary_upgrade.get_version'
+  self.method = 'binary_update.get_version'
 end
 --[[ Handshake.Hello ]]--
 
@@ -92,7 +90,6 @@ function HandshakeHello:initialize(token, agentId)
   self.method = 'handshake.hello'
   self.params.token = token
   self.params.agent_id = agentId
-  self.params.agent_name = 'Rackspace Monitoring Agent'
   self.params.process_version = version.process
   self.params.bundle_version = version.bundle
 end
@@ -208,17 +205,6 @@ function CheckTestResponse:serialize(msgId)
   return Response.serialize(self, msgId)
 end
 
---[[ CheckTargetsResponse ]]--
-local CheckTargetsResponse = Response:extend()
-function CheckTargetsResponse:initialize(replyTo, targets)
-  Response.initialize(self, replyTo)
-  self.result.targets = targets
-end
-
-function CheckTargetsResponse:serialize(msgId)
-  return Response.serialize(self, msgId)
-end
-
 --[[ Exports ]]--
 local exports = {}
 exports.Request = Request
@@ -226,12 +212,11 @@ exports.Response = Response
 exports.HandshakeHello = HandshakeHello
 exports.Heartbeat = Heartbeat
 exports.Manifest = Manifest
-exports.BinaryUpgradeRequest = BinaryUpgrade
-exports.BundleUpgradeRequest = BundleUpgrade
+exports.BinaryUpdateRequest = BinaryUpdate
+exports.BundleUpdateRequest = BundleUpdate
 exports.MetricsRequest = MetricsRequest
 exports.SystemInfoResponse = SystemInfoResponse
 exports.ScheduleChangeAck = ScheduleChangeAck
 exports.HostInfoResponse = HostInfoResponse
 exports.CheckTestResponse = CheckTestResponse
-exports.CheckTargetsResponse = CheckTargetsResponse
 return exports

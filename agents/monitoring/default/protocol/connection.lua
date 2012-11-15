@@ -65,13 +65,13 @@ requests['check_metrics.post'] = function(self, check, checkResults, callback)
   self:_send(m, callback)
 end
 
-requests['binary_upgrade.get_version'] = function(self, callback)
-  local m = msg.BinaryUpgradeRequest:new()
+requests['binary_update.get_version'] = function(self, callback)
+  local m = msg.BinaryUpdateRequest:new()
   self:_send(m, callback)
 end
 
-requests['bundle_upgrade.get_version'] = function(self, callback)
-  local m = msg.BundleUpgradeRequest:new()
+requests['bundle_update.get_version'] = function(self, callback)
+  local m = msg.BundleUpdateRequest:new()
   self:_send(m, callback)
 end
 
@@ -94,16 +94,6 @@ responses['host_info.get'] = function(self, request, callback)
   self:_send(m, callback)
 end
 
-responses['check.targets'] = function(self, request, callback)
-  if not request.params.type then
-    return
-  end
-  check.targets(request.params.type, function(err, targets)
-    local m = msg.CheckTargetsResponse:new(request, targets)
-    self:_send(m, callback)
-  end)
-end
-
 responses['check.test'] = function(self, request, callback)
   local status, checkParams = pcall(function()
     return JSON.parse(request.params.checkParams)
@@ -118,18 +108,17 @@ responses['check.test'] = function(self, request, callback)
   end)
 end
 
-responses['binary_upgrade.available'] = function(self, replyTo, callback)
+responses['binary_update.available'] = function(self, replyTo, callback)
   local m = msg.Response:new(replyTo)
   self:_send(m, callback)
 end
 
-responses['bundle_upgrade.available'] = function(self, replyTo, callback)
+responses['bundle_update.available'] = function(self, replyTo, callback)
   local m = msg.Response:new(replyTo)
   self:_send(m, callback)
 end
 
-function AgentProtocolConnection:initialize(log, myid, token, guid, conn)
-
+function AgentProtocolConnection:initialize(log, myid, token, conn)
   assert(conn ~= nil)
   assert(myid ~= nil)
 
@@ -146,7 +135,6 @@ function AgentProtocolConnection:initialize(log, myid, token, guid, conn)
   self._completions = {}
   self._requests = requests
   self._responses = responses
-  self._guid = guid
   self.HANDSHAKE_TIMEOUT = HANDSHAKE_TIMEOUT
   self:setState(STATES.INITIAL)
 end
@@ -200,7 +188,7 @@ function AgentProtocolConnection:_onData(data)
     else
       self:_processMessage(obj)
     end
-
+    
     line = self:_popLine()
   end
 end
@@ -234,7 +222,7 @@ function AgentProtocolConnection:_completionKey(...)
   local source = nil
 
   if #args == 1 then
-    source = self._guid
+    source = self._myid
     msgid = args[1]
   elseif #args == 2 then
     source = args[1]
@@ -250,7 +238,8 @@ function AgentProtocolConnection:_send(msg, callback, timeout)
   msg = msg:serialize(self._msgid)
 
   msg.target = 'endpoint'
-  msg.source = self._guid
+  msg.source = self._myid
+
   local msg_str = JSON.stringify(msg)
   local data = msg_str .. '\n'
   local key = self:_completionKey(msg.target, msg.id)

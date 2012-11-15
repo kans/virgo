@@ -37,6 +37,7 @@ def test_server_fixture_blocking(stdout=None):
     proc = subprocess.Popen([paths.luvit, server])
 
     def handler(signum, frame):
+        print(proc)
         proc.kill()
 
     signal.signal(signal.SIGUSR1, handler)

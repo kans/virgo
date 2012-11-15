@@ -7,7 +7,6 @@ local logging = require('logging')
 local loggingUtil = require ('../util/logging')
 local path = require('path')
 local util = require('../util/misc')
-local consts = require('../util/constants')
 local table = require('table')
 local os = require('os')
 local https = require('https')
@@ -15,12 +14,9 @@ local fs = require('fs')
 local async = require('async')
 local fmt = require('string').format
 local fsutil = require('../util/fs')
-local crypto = require('_crypto')
-local errors = require('../errors')
-local instanceof = require('core').instanceof
-local request = require('../protocol/request')
 
 -- Connection Messages
+
 local ConnectionMessages = Emitter:extend()
 function ConnectionMessages:initialize(connectionStream)
   self._connectionStream = connectionStream
@@ -73,172 +69,78 @@ function ConnectionMessages:fetchManifest(client)
   end
 end
 
-function ConnectionMessages:verify(path, sig_path, kpub_path, callback)
+function ConnectionMessages:getUpdate(update_type, client)
+  local dir, filename, req_type, write_path, stream
 
-  local parallel = {
-    hash = function(callback)
-      local hash = crypto.verify.new('sha256')
-      local stream = fs.createReadStream(path)
-      stream:on('data', function(d)
-        hash:update(d)
-      end)
-      stream:on('end', function()
-        callback(nil, hash)
-      end)
-      stream:on('error', callback)
-    end,
-    sig = function(callback)
-      fs.readFile(sig_path, callback)
-    end,
-    pub_data = function(callback)
-      fs.readFile(kpub_path, callback)
-    end
-  }
-  async.parallel(parallel, function(err, res)
-    if err then return callback(err) end
-    local hash = res.hash[1]
-    local sig = res.sig[1]
-    local pub_data = res.pub_data[1]
-    local key = crypto.pkey.from_pem(pub_data)
-
-    if not key then
-      return callback(errors.InvalidSignatureError:new('invalid key file'))
-    end
-
-    if not hash:final(sig, key) then
-      return callback(errors.InvalidSignatureError:new('invalid sig on file: '.. path))
-    end
-
-    callback()
-  end)
-end
-
-function ConnectionMessages:getUpgrade(upgrade_type, client)
-  local dir, filename, version, extension, AbortDownloadError, temp_dir, unverified_dir, download_attempts
-
-  AbortDownloadError = errors.Error:extend()
-  temp_dir = consts.DEFAULT_DOWNLOAD_PATH
-  unverified_dir = path.join(consts.DEFAULT_DOWNLOAD_PATH, 'unverified')
-  filename = virgo.default_name
-  extension = ""
-  download_attempts = 2
-
-  if upgrade_type ~= "bundle" or upgrade_type ~= "binary" then
-    client:log(logging.ERROR, fmt('Invalid upgrade_type specified: %s', tostring(upgrade_type)))
-    return
+  if update_type == "binary" then
+    dir = virgo_paths.get(virgo_paths.VIRGO_PATH_TMP_DIR)
+    filename = virgo.default_name
+  elseif update_type == "bundle" then 
+    dir = virgo_paths.get(virgo_paths.VIRGO_PATH_BUNDLE_DIR)
+    filename = virgo.default_name .. '.zip'
+  else
+    return client:log(logging.WARNING, fmt('Got request for %s update.', update_type))
   end
 
-  if upgrade_type == "bundle" then
-    extension = ".zip"
-  end
+  write_path = path.join(dir, filename)
 
-  local function get_path(arg)
-    local sig = arg and arg.sig and '.sig' or ""
-    local verified = arg and arg.verified
-    local name = filename..'-'..version..extension..sig
+  stream = fs.createWriteStream(write_path)
 
-    local _dir = unverified_dir
-    if verified then
-      if upgrade_type == "binary" then
-        _dir = virgo_paths.get(virgo_paths.VIRGO_PATH_EXE_DIR)
-      else
-        _dir = virgo_paths.get(virgo_paths.VIRGO_PATH_BUNDLE_DIR)
-      end
-    end
-    return path.join(_dir, name)
-  end
+  req_type = fmt('%s_update.get_version', update_type)
 
-  async.waterfall({
-    function(callback)
-      fsutil.mkdirp(unverified_dir, "0755", function(err)
-        if not err then return callback() end
-        if err.code == "EEXIST" then return callback() end
-        callback(err)
+  local waterfall = {
+    function(cb)
+      fsutil.mkdirp(dir, "0755", function(err)
+        if not err then return cb() end
+        if err.code == "EEXIST" then return cb() end
+        cb(err)
       end)
     end,
-    function(callback)
-      client.protocol:request(upgrade_type ..'_upgrade.get_version', callback)
+    function(cb)
+      client.protocol:request(req_type, cb)
     end,
-    function(res, callback)
-      version = res.result.version
+    function(res, cb)
+      local version = res.result.version
 
-      async.parallel({
-        function(callback)
-          fs.exists(get_path{verified=true}, callback)
-        end,
-        function(callback)
-          fs.exists(get_path{verified=true, sig=true}, callback)
-        end,
-      }, callback)
-    end,
-    function(res, callback)
-      local sig, update
-
-      sig, update = unpack(res)
-
-      -- Early return from waterfall
-      if sig[1] == true and update[1] == true then
-        return callback(AbortDownloadError:new())
-      end
-
-      local uri_path = fmt('/upgrades/%s/%s', upgrade_type, version)
-      if upgrade_type == 'binary' then
-        uri_path = uri_path .. '/' .. virgo.platform
-      end
-
-      client:log(logging.INFO, fmt('fetching version %s and its sig for %s', version, upgrade_type))
+      client:log(logging.INFO, fmt('fetching version %s for %s', version, update_type))
 
       local options = {
-        method = 'GET',
         host = client._host,
         port = client._port,
-        tls = client._tls_options
+        path = fmt('/update/%s/%s', update_type, res.result.version),
+        method = 'GET'
       }
-      async.parallel({
-        function(callback)
-          request.makeRequest(misc.merge({
-            path = uri_path,
-            download = get_path(),
-          }, options), callback)
-        end,
-        function(callback)
-          request.makeRequest(misc.merge({
-            path = uri_path ..'.sig',
-            download = get_path{sig=true},
-          }, options), callback)
-        end
-      }, callback)
-    end,
-    function(res, callback)
-      client:log(logging.DEBUG, 'Downloaded update and sig')
-      self:verify(get_path(), get_path{sig=true}, process.cwd()..'/tests/ca/server.pem', callback)
-    end,
-  function(res, callback)
-
-    async.parallel({
-      function(callback)
-        fs.rename(get_path(), get_path{verified=true}, callback)
-      end,
-      function(callback)
-        fs.rename(get_path{sig=true}, get_path{sig=true, verified=true}, callback)
+      util.merge(options, client._tls_options)
+      
+      local req = https.request(options, function(res)
+        stream:on('error', cb)
+        stream:on('end', cb)
+        res:pipe(stream)
+        res:on('end', function(d)
+          stream:finish(d)
+        end)
+      end)
+      req:on('error', cb)
+      req:done()
+    end
+  }
+  local cb = function(err, res)
+    if err then
+      if type(err) == 'table' then 
+        err = table.concat(err, '\n')
       end
-      }, callback)
-  end},
-  function(err, res)
-    if not err then
-      local msg = 'An update to the Rackspace Cloud Monitoring Agent has been downloaded to ' ..
-      get_path{verified=true} .. 'and is ready to use. Please restart the agent.'
-      client:log(logging.INFO, msg)
-      return
+      return client:log(logging.ERROR, 'error downloading update ' .. err)
     end
 
-    if instanceof(err, AbortDownloadError) then
-      return client:log(logging.DEBUG, 'already downloaded update, not doing so again')
-    end
+    client:log(logging.INFO, 'downloaded update')
 
-    client:log(logging.ERROR, fmt('COULD NOT DOWNLOAD UPDATE: %s', tostring(err)))
-  end)
+  end
+  status, err = pcall(async.waterfall, waterfall, cb)
 
+  if err then 
+    client:log(logging.ERROR, 'error downloading update ' .. err)
+  end
+  
 end
 
 function ConnectionMessages:onMessage(client, msg)
@@ -252,8 +154,9 @@ function ConnectionMessages:onMessage(client, msg)
 
   client:log(logging.DEBUG, fmt('received %s', method))
 
-  local callback = function(err, msg)
+  local cb = function(err, msg)
     if (err) then
+      self:emit('error', err)
       client:log(logging.INFO, fmt('error handling %s %s', method, err))
       return
     end
@@ -265,16 +168,21 @@ function ConnectionMessages:onMessage(client, msg)
       return
     end
 
-    if method == 'binary_upgrade.available' then
-      return self:getUpgrade('binary', client)
-    elseif method == 'bundle_upgrade.available' then
-      return self:getUpgrade('bundle', client)
+    local update = nil
+    if method == 'binary_update.available' then
+      update = 'binary'
+    elseif method == 'bundle_update.available' then
+      update = 'bundle'
+    end
+
+    if update then 
+      return self:getUpdate(update, client) 
     end
 
     client:log(logging.DEBUG, fmt('No handler for method: %s', method))
   end
 
-  client.protocol:respond(method, msg, callback)
+  client.protocol:respond(method, msg, cb)
 end
 
 local exports = {}
