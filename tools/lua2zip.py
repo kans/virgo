@@ -20,7 +20,7 @@ monitoring_lua = os.path.join('agents', 'monitoring', 'default')
 collector_lua = os.path.join('agents', 'monitoring', 'collector')
 crash_lua = os.path.join('agents', 'monitoring', 'crash')
 monitoring_tests = os.path.join('agents', 'monitoring', 'tests')
-colab = os.path.join('agents', 'monitoring', 'colab')
+floobits = os.path.join('agents', 'floobits')
 
 modules = {
     async_lua:
@@ -49,8 +49,8 @@ modules = {
         generate_bundle_map('modules/monitoring/tests', 'agents/monitoring/tests'),
     crash_lua:
         generate_bundle_map('modules/monitoring/crash', 'agents/monitoring/crash'),
-    colab:
-        generate_bundle_map('modules/monitoring/colab', 'agents/monitoring/colab')
+    floobits:
+        generate_bundle_map('modules/floobits', 'agents/floobits')
 }
 
 target = sys.argv[1]

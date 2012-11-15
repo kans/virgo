@@ -13,8 +13,8 @@
       'modules/line-emitter',
       'agents/monitoring/default',
       'agents/monitoring/init.lua',
-      'agents/monitoring/colab',
-      'agents/monitoring/colab/init.lua'
+      'agents/floobits',
+      'agents/floobits/init.lua'
     ],
     'modules_collector': [
       'lib/lua',
