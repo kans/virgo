@@ -41,8 +41,7 @@ local function remove_tmp(callback)
 end
 
 local TESTS_TO_RUN = {
-  './crash-dump',
-  './collector',
+--  './collector',
   './tls',
   './agent-protocol',
   './crypto',

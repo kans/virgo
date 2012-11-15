@@ -63,7 +63,8 @@ function request(url, method, headers, payload, options, callback)
     host = parsed.hostname,
     port = parsed.port,
     path = parsed.pathname .. parsed.search,
-    headers = headers
+    headers = headers,
+    method = method
   },
 
   function (res)
