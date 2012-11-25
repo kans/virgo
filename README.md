@@ -1,3 +1,6 @@
+run with (after calling make to build the binary/zip bundle)
+./monitoring-agent -z monitoring.zip -e ../floobits
+
 Virgo
 =====
 
